@@ -1,0 +1,38 @@
+app:
+  name: "SnugPrism Backend"
+  host: "0.0.0.0"
+  port: 8000
+  version: "0.1.0"
+
+cors:
+  origins:
+    - "http://localhost:3000"
+    - "https://snugprism.vercel.app"
+
+llm:
+  provider: "openai"
+  model: "gpt-4o"           # chat / streaming
+  qa_model: "gpt-4.1"             # headless Q&A generation (strong reasoning + formatting)
+  max_tokens: 2048
+
+embeddings:
+  provider: "local"
+  model: "BAAI/bge-m3"
+  dimension: 1024
+
+rag:
+  top_k: 5
+  chunk_size: 800
+  chunk_overlap: 100
+  web_search_max_results: 3
+
+logging:
+  level: "INFO"
+
+qdrant:
+  host: "localhost"
+  port: 6333
+  collection: "snugprism_chunks"
+
+mongodb:
+  database: "snugprism"

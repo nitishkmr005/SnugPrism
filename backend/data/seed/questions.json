@@ -1,0 +1,345 @@
+[
+  {
+    "topic_slug": "llms",
+    "question": "In AgentBot 3.0, you used an LLM to extract structured JSON from call transcripts. How did you handle schema validation and hallucination in the extraction pipeline?",
+    "answer": "The extraction pipeline used a two-stage approach. First, I defined a **Pydantic JSON schema** with 150+ attributes and passed it as a system prompt constraint to Claude 3.5 Sonnet. Second, I added a post-extraction **validation layer** that checked:\n\n- **Type correctness**: Every field validated against its Pydantic type (dates, enums, strings)\n- **Cross-attribute consistency**: E.g., if `appointment_scheduled=True`, then `appointment_date` must be non-null\n- **Confidence thresholds**: For low-confidence extractions (detected via CoT reasoning in the prompt), we flagged for human review\n\nFor hallucination specifically, LLM-as-a-Judge was used: a second LLM call evaluated each extracted attribute against the source transcript, computing attribute-level precision and recall. Any attribute with recall < 0.85 was treated as a potential hallucination.\n\nKey insight: **Grounding the LLM** by including the exact transcript verbatim in the prompt (not a summary) significantly reduced fabrications. We also used temperature=0 for extraction tasks.",
+    "difficulty": "hard",
+    "tags": ["llm", "extraction", "pydantic", "hallucination"],
+    "code_snippet": "```python\nfrom pydantic import BaseModel, validator\nfrom typing import Optional\nimport json\n\nclass CallAttributes(BaseModel):\n    appointment_scheduled: bool\n    appointment_date: Optional[str] = None\n    sentiment: str  # positive/neutral/negative\n    \n    @validator('appointment_date', always=True)\n    def date_required_if_scheduled(cls, v, values):\n        if values.get('appointment_scheduled') and not v:\n            raise ValueError('appointment_date required when scheduled=True')\n        return v\n\ndef extract_with_validation(transcript: str, llm_fn) -> CallAttributes:\n    raw = llm_fn(f'Extract JSON from: {transcript}')\n    data = json.loads(raw)\n    return CallAttributes(**data)  # raises on schema violations\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "llms",
+    "question": "What is the difference between RAG and fine-tuning? When would you choose one over the other for an enterprise LLM application?",
+    "answer": "**RAG** retrieves relevant documents at inference time and injects them into the prompt context. **Fine-tuning** bakes domain knowledge into model weights via supervised training on task-specific examples.\n\n**Choose RAG when:**\n- Knowledge changes frequently (market data, policies, call logs)\n- You need source attribution and auditability (financial services compliance)\n- Dataset is small (<1000 examples) — not enough for effective fine-tuning\n- You need to cite specific documents in answers\n- Latency budget is flexible (extra retrieval step adds ~50-200ms)\n\n**Choose fine-tuning when:**\n- You need to teach a specific output *format* or *style* consistently\n- The task is well-defined with stable data (intent classification, entity extraction)\n- Inference speed is critical (no extra retrieval step)\n- You have thousands of high-quality examples\n\n**In AgentBot 3.0**: RAG was chosen because call transcripts are generated continuously, and the extraction task required the actual transcript in context. Fine-tuning would have needed constant retraining as new attribute types emerged.\n\n**Pro tip for interviews**: Mention that the two are **complementary** — fine-tuning a model on extraction format *and* using RAG for domain context often outperforms either alone.",
+    "difficulty": "medium",
+    "tags": ["rag", "fine-tuning", "llm", "enterprise"],
+    "code_snippet": null,
+    "comparison_table": {
+      "headers": ["Dimension", "RAG", "Fine-tuning"],
+      "rows": [
+        ["Knowledge updates", "Real-time (re-index)", "Requires retraining"],
+        ["Traceability", "High (source chunks)", "Low (baked in weights)"],
+        ["Data needed", "Any size (retrieval)", "1K-100K examples"],
+        ["Latency", "Higher (retrieval step)", "Lower"],
+        ["Best for", "Dynamic knowledge", "Stable format/style tasks"]
+      ]
+    }
+  },
+  {
+    "topic_slug": "llms",
+    "question": "Walk me through how you would design an LLM evaluation framework for a production pipeline like AgentBot 3.0.",
+    "answer": "The AgentBot evaluation framework used **LLM-as-a-Judge** at attribute level. Here's the design:\n\n**1. Ground Truth Dataset**\nHuman annotators labeled 2,000 call transcripts for all 150+ attributes. This becomes the eval gold set.\n\n**2. Extraction Run**\nRun the production extraction pipeline on the same transcripts.\n\n**3. Attribute-Level Metrics**\nFor each attribute: compute **precision** (of extracted values, % correct) and **recall** (of ground-truth values, % captured). Different attributes have different importance weights.\n\n**4. LLM-as-a-Judge**\nA second LLM (GPT-4o or Claude) evaluates individual extractions on a 1-5 scale with reasoning. Prompt: *'Given this transcript, is the extracted value [X] for attribute [Y] correct? Score 1-5 and explain.'*\n\n**5. Validation Platform (Streamlit)**\nBuilt an internal tool showing side-by-side: transcript | extracted JSON | judge scores. Reviewers could override incorrect judgments, closing the human-in-the-loop.\n\n**6. Regression Testing**\nEvery model/prompt change ran against the gold set. A drop in recall > 2% on any critical attribute blocked deployment.\n\nKey lesson: **Aggregate metrics hide attribute-level failures**. Always evaluate each output field independently.",
+    "difficulty": "hard",
+    "tags": ["llm-evaluation", "llm-as-a-judge", "production", "agentbot"],
+    "code_snippet": null,
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "llms",
+    "question": "Explain Chain-of-Thought (CoT) prompting and when it improves LLM performance.",
+    "answer": "**Chain-of-Thought (CoT)** prompting asks the model to generate intermediate reasoning steps before the final answer. Instead of asking 'What is the answer?', you prompt 'Think step by step, then give the answer.'\n\n**Why it works:**\nTransformers are autoregressive — each token conditions on prior tokens. By generating reasoning tokens, the model 'has more computation budget' before the final answer token, effectively creating a scratchpad.\n\n**When it helps most:**\n- Multi-step arithmetic and logic problems\n- Complex extraction tasks (understanding context before filling fields)\n- Any task where humans would need intermediate steps\n\n**When it doesn't help:**\n- Simple factual recall ('What is the capital of France?')\n- Very short-context tasks\n- When you need deterministic, fast responses (adds tokens/latency)\n\n**Variants:**\n- **Zero-shot CoT**: Just add 'Let's think step by step'\n- **Few-shot CoT**: Provide 2-3 worked examples with reasoning\n- **Self-consistency**: Sample multiple CoT paths, take majority vote answer\n\n**In practice (AgentBot)**: CoT was used for ambiguous attribute extraction — we asked the model to reason about the transcript context before filling each ambiguous field, which reduced hallucination on borderline cases.",
+    "difficulty": "medium",
+    "tags": ["chain-of-thought", "prompting", "reasoning", "llm"],
+    "code_snippet": "```python\n# Zero-shot CoT\nprompt = \"\"\"Extract the appointment date from this transcript.\nThink step by step before answering.\n\nTranscript: {transcript}\n\nReasoning: Let me identify date-related statements...\nAnswer:\"\"\"\n\n# Few-shot CoT  \nfew_shot_example = \"\"\"\nTranscript: 'I can schedule you for next Tuesday the 15th'\nReasoning: The rep mentions 'next Tuesday the 15th'. \n           Today is May 8, so next Tuesday = May 13 not 15... \n           Actually 'the 15th' is the specific date override.\nAnswer: May 15\n\"\"\"\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "llms",
+    "question": "What are the key architectural differences between GPT-4, Claude, and LLaMA 3? How do these affect deployment choices?",
+    "answer": "All three are transformer-based decoder-only LLMs, but differ in training approach, architecture tweaks, and deployment model.\n\n**GPT-4**: Likely a mixture-of-experts (MoE) architecture (though not officially confirmed). RLHF + Constitutional AI-style RLAIF. API-only. Strong on reasoning and code.\n\n**Claude 3.x**: Constitutional AI training (RLAIF). Very long context (200K tokens). Strong on instruction following and safety. API-only. Used in AgentBot for its large context window and JSON reliability.\n\n**LLaMA 3 (70B/405B)**: Open weights, allowing on-premise deployment. Group Query Attention (GQA) for efficiency. RoPE positional embeddings. Can be fine-tuned and quantized (GGUF) for local inference.\n\n**Deployment choice matrix:**",
+    "difficulty": "medium",
+    "tags": ["gpt4", "claude", "llama", "architecture", "deployment"],
+    "code_snippet": null,
+    "comparison_table": {
+      "headers": ["Factor", "GPT-4o", "Claude 3.5", "LLaMA 3 70B"],
+      "rows": [
+        ["Deployment", "API only", "API only", "Self-hosted possible"],
+        ["Context window", "128K", "200K", "128K"],
+        ["Data privacy", "Sent to OpenAI", "Sent to Anthropic", "On-premise option"],
+        ["Cost at scale", "High", "Medium-High", "Low (self-hosted)"],
+        ["Fine-tuning", "OpenAI API", "Not available", "Full fine-tuning"],
+        ["Best for", "Code, reasoning", "Long docs, JSON", "Privacy, customization"]
+      ]
+    }
+  },
+  {
+    "topic_slug": "llms",
+    "question": "How would you implement token streaming for an LLM chatbot in a production web app?",
+    "answer": "Token streaming sends each generated token to the client as it's produced, rather than waiting for the full response. This dramatically improves perceived latency.\n\n**Backend (FastAPI + OpenAI)**:\nUse `client.chat.completions.create(stream=True)` and yield tokens via **Server-Sent Events (SSE)**. SSE is simpler than WebSockets for unidirectional streaming.\n\n**Frontend (Next.js)**:\nUse `EventSource` or `fetch` with `ReadableStream` to consume the SSE stream and append tokens to the message bubble character by character.\n\n**Key design decisions:**\n- Send `event: token` for each token, `event: done` when complete\n- Include metadata (sources, articles) in final `event: done` payload\n- Handle reconnection: if SSE drops, client should retry with session_id to restore context\n- For voice agents: don't stream — return full text so TTS gets complete sentences",
+    "difficulty": "medium",
+    "tags": ["streaming", "sse", "fastapi", "nextjs"],
+    "code_snippet": "```python\n# FastAPI SSE streaming endpoint\nfrom fastapi import APIRouter\nfrom fastapi.responses import StreamingResponse\nimport json\n\nasync def token_generator(messages):\n    async for token in llm.stream(messages):\n        yield f\"event: token\\ndata: {json.dumps(token)}\\n\\n\"\n    yield 'event: done\\ndata: {}\\n\\n'\n\n@router.post('/chat/stream')\nasync def chat_stream(body: ChatRequest):\n    messages = build_messages(body.message)\n    return StreamingResponse(\n        token_generator(messages),\n        media_type='text/event-stream'\n    )\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "recommender_systems",
+    "question": "Walk me through the two-stage recommender architecture you built for the Workplace Seminar system. Why two stages instead of a single model?",
+    "answer": "The system served 15M+ participants across thousands of workplace seminars. A two-stage design solved the **retrieval vs. ranking tradeoff**.\n\n**Stage 1 — Propensity Model (LightGBM):**\n- Predicts probability that a participant will attend *any* seminar (binary classification)\n- Features: engagement history, plan type, age bracket, tenure, recent platform activity\n- Acts as a filter: if propensity < threshold, don't recommend at all (prevents wasted impressions)\n- Fast inference: LightGBM serves predictions in <5ms\n\n**Stage 2 — Theme Ranking (Neural Network, multi-label):**\n- For participants above the Stage 1 threshold, predicts which seminar themes they'd attend\n- Multi-label classifier: a participant can be interested in multiple themes\n- Features include richer embedding-based features not efficient in LightGBM\n\n**Why two stages?**\n1. **Computational efficiency**: Stage 2 neural network is more expensive. Running it on all 15M participants would be cost-prohibitive. Stage 1 reduces the candidate pool by ~60%.\n2. **Different objectives**: Stage 1 captures 'will engage at all' (recall-optimized), Stage 2 captures 'which theme' (precision-optimized).\n3. **Training flexibility**: Each stage can be retrained independently on different schedules.\n\nResult: 2.3× lift in event attendance, 64,600+ incremental participants.",
+    "difficulty": "hard",
+    "tags": ["two-tower", "lightgbm", "recommender", "two-stage"],
+    "code_snippet": null,
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "recommender_systems",
+    "question": "How did you handle the cold-start problem in your recommender systems at Fidelity?",
+    "answer": "Cold-start affects both new users (no history) and new items (new seminar themes). Both were addressed differently.\n\n**New User Cold Start:**\n- **Demographic fallback**: Use age bracket, plan type, and tenure as proxy signals. Cluster similar users and recommend what that cluster engages with.\n- **Onboarding signals**: First login actions (topics viewed, time spent) provide early signals fed back within the same session.\n- **Propensity floor**: Rather than predicting low propensity for new users (which would suppress recommendations), we set a minimum propensity floor for accounts < 30 days old.\n\n**New Item Cold Start (new seminar themes):**\n- **Content-based bootstrap**: Embed the seminar description using BERT, find existing themes with similar embeddings, and inherit their historical engagement distribution.\n- **Exploration budget**: LinGreedy MAB (used in Helios) naturally handles this — new arms get exploration probability proportional to uncertainty.\n- **Business rule override**: High-priority new seminars (compliance, benefits enrollment) get a guaranteed minimum recommendation rate regardless of model score.\n\n**Key interview insight**: Always separate cold-start strategies by type (user vs. item) and connect them to your model's inputs. Pure collaborative filtering has no fallback for cold-start; hybrid models do.",
+    "difficulty": "hard",
+    "tags": ["cold-start", "recommender", "collaborative-filtering", "embeddings"],
+    "code_snippet": null,
+    "comparison_table": {
+      "headers": ["Cold-Start Type", "Problem", "Solution Used"],
+      "rows": [
+        ["New user", "No interaction history", "Demographic clusters + propensity floor"],
+        ["New item", "No engagement data", "Content embeddings + exploration budget"],
+        ["Geographic expansion", "No regional data", "Transfer from similar regions"]
+      ]
+    }
+  },
+  {
+    "topic_slug": "recommender_systems",
+    "question": "Explain contextual multi-armed bandits and how LinGreedy works. How does it compare to a pure supervised recommendation model?",
+    "answer": "A **multi-armed bandit (MAB)** balances exploration (trying new options) and exploitation (using known best options) in an online learning setting. The 'arms' are the items to recommend.\n\n**Contextual MAB** extends this by conditioning the arm selection on a context vector (user features). This allows per-user personalization.\n\n**LinGreedy** is a specific contextual MAB algorithm:\n- For each arm (e.g., a content collection in Helios), maintain a **ridge regression model**: `reward ≈ θ_arm · context`\n- With probability ε, explore randomly (LinGreedy = greedy with epsilon exploration)\n- Otherwise, exploit: recommend the arm with highest predicted reward given current context\n- Update the ridge regression weights online after observing the reward (click/engagement)\n\n**LinGreedy vs. Supervised Recommender:**\n\n| Dimension | LinGreedy MAB | Supervised Model |\n|---|---|---|\n| Learning | Online (updates each interaction) | Batch (retrain periodically) |\n| Exploration | Built-in (ε-greedy) | None (greedy exploitation) |\n| Convergence | Slower (exploration overhead) | Faster on known distributions |\n| New items | Natural (new arm = new model) | Requires cold-start strategy |\n\n**Helios result**: LinGreedy achieved 2.13× lift in CTR@1 over the non-contextual baseline because it adapted to individual user contexts in real time.",
+    "difficulty": "hard",
+    "tags": ["mab", "lingreedy", "contextual-bandit", "exploration"],
+    "code_snippet": "```python\nimport numpy as np\n\nclass LinGreedyArm:\n    def __init__(self, context_dim: int, lambda_: float = 1.0):\n        self.A = lambda_ * np.eye(context_dim)  # ridge regularization\n        self.b = np.zeros(context_dim)\n    \n    def predict(self, context: np.ndarray) -> float:\n        theta = np.linalg.solve(self.A, self.b)\n        return theta @ context\n    \n    def update(self, context: np.ndarray, reward: float):\n        self.A += np.outer(context, context)\n        self.b += reward * context\n\nclass LinGreedyBandit:\n    def __init__(self, n_arms: int, context_dim: int, epsilon: float = 0.1):\n        self.arms = [LinGreedyArm(context_dim) for _ in range(n_arms)]\n        self.epsilon = epsilon\n    \n    def select_arm(self, context: np.ndarray) -> int:\n        if np.random.random() < self.epsilon:\n            return np.random.randint(len(self.arms))  # explore\n        scores = [arm.predict(context) for arm in self.arms]\n        return int(np.argmax(scores))  # exploit\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "recommender_systems",
+    "question": "What evaluation metrics do you use for recommender systems, and how do they differ from classification metrics?",
+    "answer": "Recommender evaluation focuses on **ranking quality** and **business impact**, not just binary correctness.\n\n**Ranking Metrics:**\n- **Precision@K**: Of the top-K recommendations, what fraction are relevant? (e.g., P@3 = 2/3 if 2 of 3 recommended seminars are attended)\n- **Recall@K**: Of all relevant items, what fraction appear in top-K?\n- **NDCG@K**: Normalized Discounted Cumulative Gain — rewards putting relevant items higher in the ranking (log discount on position)\n- **MRR**: Mean Reciprocal Rank — for tasks where one correct answer exists\n- **CTR@1**: In Helios MAB, the click-through rate on the first recommended item was the primary KPI\n\n**Business Metrics (the ones that matter most):**\n- **Lift**: Actual engagement rate / baseline (random or previous model) engagement rate. AgentBot WPS achieved 2.3× lift.\n- **Incremental conversions**: Additional sign-ups or attendees *attributable* to the recommendation (requires holdout group)\n- **Coverage**: Fraction of the item catalog that ever gets recommended (diversity)\n\n**Why not just use accuracy?**\nA model that always recommends the top-10 most popular items gets high accuracy but adds no personalization value. Ranking metrics penalize this.\n\n**A/B testing**: Always the final arbiter. Offline metrics (NDCG) can be misleading because they only evaluate on observed interactions (popularity bias). Online A/B tests measure true causal lift.",
+    "difficulty": "medium",
+    "tags": ["ndcg", "precision-recall", "evaluation", "recommender", "ab-testing"],
+    "code_snippet": null,
+    "comparison_table": {
+      "headers": ["Metric", "Measures", "Use Case"],
+      "rows": [
+        ["Precision@K", "Relevance fraction in top K", "When all K slots matter equally"],
+        ["NDCG@K", "Ranked relevance quality", "When top positions matter more"],
+        ["CTR@1", "Click rate on first result", "Single-slot recommendations (Helios)"],
+        ["Lift", "vs baseline engagement", "Business impact reporting"],
+        ["Coverage", "Catalog diversity", "Avoiding filter bubble"]
+      ]
+    }
+  },
+  {
+    "topic_slug": "ai_agents",
+    "question": "Explain the ReAct (Reasoning + Acting) framework for AI agents. How does it differ from a simple LLM call?",
+    "answer": "**ReAct** (Reason + Act) is an agent framework where the LLM alternates between:\n1. **Thought**: Reasoning about what to do next\n2. **Action**: Calling a tool (search, calculator, API)\n3. **Observation**: Processing the tool's output\n...repeating until a final answer is reached.\n\n**vs. Simple LLM call:**\nA single LLM call has a fixed context window — it can only use knowledge from training + the prompt. ReAct agents can:\n- Fetch live data (web search, database queries)\n- Perform multi-step computations\n- Self-correct based on tool outputs\n- Handle tasks requiring more steps than fit in one completion\n\n**Example ReAct trace for 'What was the stock price of Fidelity's top fund last quarter?':**\n```\nThought: I need to find Fidelity's top fund and its Q1 2025 price.\nAction: web_search('Fidelity top performing fund Q1 2025')\nObservation: 'Fidelity Contrafund returned 8.2%...'\nThought: Now I need the actual price, not just returns.\nAction: get_stock_price(ticker='FCNTX', date='2025-03-31')\nObservation: $21.47\nAnswer: Fidelity Contrafund (FCNTX) closed at $21.47 on March 31, 2025.\n```\n\n**Relevance to your work**: AgentBot 3.0 used a tool-calling pattern where the LLM decided which extraction functions to invoke per transcript type, essentially implementing ReAct without calling it by that name.",
+    "difficulty": "medium",
+    "tags": ["react", "agents", "tool-calling", "reasoning"],
+    "code_snippet": "```python\n# LangChain ReAct agent pattern\nfrom langchain.agents import AgentExecutor, create_react_agent\nfrom langchain_core.tools import tool\n\n@tool\ndef search_knowledge_base(query: str) -> str:\n    \"\"\"Search the company knowledge base.\"\"\"\n    return kb.search(query)\n\n@tool  \ndef get_customer_data(customer_id: str) -> str:\n    \"\"\"Fetch customer account data.\"\"\"\n    return db.get_customer(customer_id)\n\nagent = create_react_agent(llm, [search_knowledge_base, get_customer_data], prompt)\nexecutor = AgentExecutor(agent=agent, tools=[...], verbose=True, max_iterations=5)\nresult = executor.invoke({\"input\": \"Summarize account changes for customer 12345\"})\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "ai_agents",
+    "question": "What is LangGraph and when would you choose it over a simple LangChain agent?",
+    "answer": "**LangGraph** is a framework for building stateful, multi-actor agent workflows as directed graphs. Each node in the graph is an LLM call or tool call; edges define the control flow.\n\n**Key difference from LangChain agents:**\n- LangChain agents are **linear** (ReAct loop: think → act → observe → repeat). LangGraph supports **branching, looping, parallelism, and conditional routing**.\n- LangGraph has built-in **state management** via a typed state schema persisted across turns.\n- LangGraph supports **multi-agent** patterns: supervisor agents routing to specialist sub-agents.\n\n**Choose LangGraph when:**\n- Workflow has conditional branches (e.g., different extraction paths for voice vs email transcripts)\n- You need **human-in-the-loop** checkpoints (pause for approval, then resume)\n- You're building **multi-agent systems** (a planner agent + executor agents)\n- You need persistent state across sessions (LangGraph has built-in checkpointing)\n\n**Choose simple LangChain/ReAct when:**\n- Task is linear: search → answer, with no branching\n- Rapid prototyping where graph complexity isn't justified yet\n\n**AgentBot relevance**: AgentBot 3.0 would benefit from LangGraph: a supervisor node routes each transcript type (voice/email/chat) to specialized extraction nodes, with a validation node as a mandatory checkpoint before writing to the database.",
+    "difficulty": "hard",
+    "tags": ["langgraph", "langchain", "agents", "stateful"],
+    "code_snippet": "```python\nfrom langgraph.graph import StateGraph, END\nfrom typing import TypedDict\n\nclass AgentState(TypedDict):\n    transcript: str\n    transcript_type: str  # voice | email | chat\n    extracted_data: dict\n    validation_passed: bool\n\ndef classify_transcript(state: AgentState) -> AgentState:\n    # Determine type via LLM\n    state['transcript_type'] = llm_classify(state['transcript'])\n    return state\n\ndef extract_voice(state: AgentState) -> AgentState: ...\ndef extract_email(state: AgentState) -> AgentState: ...\ndef validate(state: AgentState) -> AgentState: ...\n\nbuilder = StateGraph(AgentState)\nbuilder.add_node('classify', classify_transcript)\nbuilder.add_node('extract_voice', extract_voice)\nbuilder.add_node('extract_email', extract_email)\nbuilder.add_node('validate', validate)\n\nbuilder.add_conditional_edges(\n    'classify',\n    lambda s: s['transcript_type'],\n    {'voice': 'extract_voice', 'email': 'extract_email'}\n)\nbuilder.set_entry_point('classify')\ngraph = builder.compile()\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "ai_agents",
+    "question": "How does tool calling (function calling) work in the OpenAI API? What are the key design principles for defining good tools?",
+    "answer": "**Tool calling** allows an LLM to request the execution of predefined functions. The flow is:\n1. You define tools as JSON schema in the API request\n2. The LLM returns a message with `tool_calls` instead of text content\n3. Your code executes the function and returns results\n4. You send results back to the LLM which produces the final answer\n\n**Design principles for good tools:**\n\n**1. Single responsibility**: Each tool does exactly one thing. `search_and_filter_results()` is worse than separate `search()` and `filter_results()` — the LLM can compose them.\n\n**2. Atomic and idempotent**: Tools should be safe to call multiple times. Avoid tools with side effects (writing to DB) unless necessary.\n\n**3. Descriptive names and docstrings**: The LLM uses your description to decide when to call the tool. `get_customer_info` with description 'Retrieve account balance, plan type, and transaction history for a customer' is better than just `get_data`.\n\n**4. Typed parameters with validation**: Use strict JSON schemas with enums and constraints. This prevents the LLM from passing invalid arguments.\n\n**5. Return structured data**: JSON is better than free text — the LLM can parse it reliably for subsequent tool calls.\n\n**Voice agent application**: The voice agent pipeline used tool calling for look up customer data, schedule appointments, and trigger follow-up emails — each as separate atomic tools.",
+    "difficulty": "medium",
+    "tags": ["tool-calling", "function-calling", "openai", "agents"],
+    "code_snippet": "```python\nfrom openai import OpenAI\n\ntools = [{\n    'type': 'function',\n    'function': {\n        'name': 'get_customer_account',\n        'description': 'Retrieve customer plan type, balance, and last 5 transactions',\n        'parameters': {\n            'type': 'object',\n            'properties': {\n                'customer_id': {'type': 'string', 'description': 'Fidelity account ID'},\n                'include_transactions': {'type': 'boolean', 'default': True}\n            },\n            'required': ['customer_id']\n        }\n    }\n}]\n\nclient = OpenAI()\nresponse = client.chat.completions.create(\n    model='gpt-4o',\n    messages=[{'role': 'user', 'content': 'What is the balance for account 123456?'}],\n    tools=tools,\n    tool_choice='auto'\n)\n# Check if model wants to call a tool\nif response.choices[0].message.tool_calls:\n    tool_call = response.choices[0].message.tool_calls[0]\n    result = execute_tool(tool_call.function.name, tool_call.function.arguments)\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "ai_agents",
+    "question": "You built a voice agent pipeline at Fidelity. Walk me through the architecture from speech input to speech output.",
+    "answer": "The voice agent pipeline is a real-time system requiring low latency at each stage. Architecture:\n\n**1. Speech-to-Text (STT)**\nUser speaks → audio stream → **Deepgram or Whisper** transcribes to text. Key requirement: streaming transcription with intermediate results so we don't wait for the full utterance.\n\n**2. Turn Detection**\nDetermines when the user has finished speaking (vs. a pause mid-sentence). We used:\n- **Voice Activity Detection (VAD)**: Silero VAD to detect speech/silence transitions\n- **End-of-utterance model**: Classifies whether silence = turn end or thinking pause\n\n**3. LLM Tool Calling**\nTranscribed text → LLM (GPT-4o or Claude) with tools: `lookup_account`, `schedule_appointment`, `send_email`. LLM decides which tools to call, orchestrates the workflow.\n\n**4. Text-to-Speech (TTS)**\nLLM response → **ElevenLabs or Azure TTS** → audio stream back to user. Key: stream the TTS as LLM tokens arrive (don't wait for full response) to minimize latency.\n\n**5. Latency budget (target <1.5s end-to-end):**\n- STT: ~200ms\n- LLM: ~400ms (streaming first token)\n- TTS: ~300ms (first audio chunk)\n- Network: ~100ms each way\n\n**Key challenge**: Handling interruptions — if user speaks while agent is speaking, must cancel current TTS, re-run STT on interruption, and continue from context.",
+    "difficulty": "hard",
+    "tags": ["voice-agent", "stt", "tts", "real-time", "latency"],
+    "code_snippet": null,
+    "comparison_table": {
+      "headers": ["Stage", "Component", "Latency Target"],
+      "rows": [
+        ["STT", "Deepgram Nova-2 (streaming)", "~200ms"],
+        ["Turn Detection", "Silero VAD", "~50ms"],
+        ["LLM", "GPT-4o (streaming first token)", "~400ms"],
+        ["TTS", "ElevenLabs (streaming)", "~300ms"],
+        ["Total", "End-to-end", "<1.5s"]
+      ]
+    }
+  },
+  {
+    "topic_slug": "ai_agents",
+    "question": "What is agentic memory and what are the different types? How would you implement long-term memory for a customer service agent?",
+    "answer": "**Agentic memory** allows agents to persist and recall information across turns and sessions. There are four types:\n\n**1. In-context memory (short-term)**\nThe current conversation history in the prompt. Limited by context window. Every agent has this.\n\n**2. External memory (long-term retrieval)**\nVectorized summaries of past interactions stored in a vector DB (FAISS, pgvector). Retrieved via semantic similarity. The agent queries this at the start of each session.\n\n**3. Procedural memory**\nKnowledge about *how to do things* — stored as tool definitions or system prompts. Changes rarely.\n\n**4. Episodic memory**\nSpecific past events: 'User John called on May 2nd, mentioned retirement planning, didn't want to be sold insurance.' Stored as structured records.\n\n**Implementation for customer service agent:**\n1. At session end, extract key entities + facts from conversation using LLM summarization\n2. Store structured summary in a `customer_memory` table (customer_id, date, summary, entities)\n3. At session start, retrieve last 5 summaries for this customer + embed-search for semantically relevant past interactions\n4. Inject retrieved memories into system prompt: *'Previous interactions: [summary]'*\n\n**Key tradeoff**: Too much memory in context dilutes the LLM's attention. Use summarization + selective retrieval rather than injecting full transcripts.",
+    "difficulty": "hard",
+    "tags": ["agent-memory", "rag", "long-term-memory", "agents"],
+    "code_snippet": null,
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "embedding_models",
+    "question": "Compare OpenAI text-embedding-3-small, Cohere Embed v3, and BGE-M3 across training objective, dimensions, and production use cases.",
+    "answer": "Embedding models differ in training objective (what signal they're trained on), architecture choices, and operational characteristics.\n\n**OpenAI text-embedding-3-small:**\nTrained with a contrastive objective (likely MNRL — Multiple Negatives Ranking Loss) on large-scale web + curated pairs. 1536 dimensions. Matryoshka Representation Learning (MRL) allows truncation to lower dimensions with graceful degradation. Best for: general-purpose RAG, semantic search.\n\n**Cohere Embed v3:**\nTrains with contrastive loss + hard negatives mining. Explicitly trained to distinguish document from query embeddings (use `input_type='query'` vs `'document'`). 1024 dimensions. Strong cross-lingual performance. Best for: multilingual retrieval, enterprise search.\n\n**BGE-M3 (BAAI):**\nHybrid retrieval: dense embedding + sparse (BM25-style) + multi-vector (ColBERT) all from the same model. Fine-tuned with knowledge distillation from larger models. Free, self-hostable. Best for: when you need dense + sparse retrieval without separate BM25 index.\n\n**Key interview insight**: Always mention **MTEB (Massive Text Embedding Benchmark)** — the standard eval benchmark for comparing embedding models across retrieval, classification, and clustering tasks.",
+    "difficulty": "hard",
+    "tags": ["embedding-models", "openai", "cohere", "bge", "mteb"],
+    "code_snippet": null,
+    "comparison_table": {
+      "headers": ["Model", "Dimensions", "Training Loss", "License", "Best For"],
+      "rows": [
+        ["text-embedding-3-small", "1536 (truncatable)", "Contrastive + MRL", "Commercial API", "General RAG"],
+        ["text-embedding-3-large", "3072", "Contrastive + MRL", "Commercial API", "High-accuracy retrieval"],
+        ["Cohere Embed v3", "1024", "Contrastive + hard negatives", "Commercial API", "Multilingual enterprise"],
+        ["BGE-M3", "1024", "Multi-task distillation", "Apache 2.0 (free)", "Dense+sparse hybrid"],
+        ["E5-mistral-7b", "4096", "Instruction-tuned", "MIT", "Instruction following queries"],
+        ["all-MiniLM-L6-v2", "384", "Knowledge distillation", "Apache 2.0", "Fast/cheap low-latency"]
+      ]
+    }
+  },
+  {
+    "topic_slug": "embedding_models",
+    "question": "What is Matryoshka Representation Learning (MRL) and why is it useful for production embedding systems?",
+    "answer": "**MRL (Matryoshka Representation Learning)** trains embeddings so that the first N dimensions of a vector already contain a useful lower-dimensional representation. Like Russian nesting dolls — the outer (full) representation contains accurate inner (smaller) representations.\n\n**How it's trained:**\nThe loss function is applied at multiple dimensionality levels simultaneously: `L = L(full_dim) + L(512) + L(256) + L(128)`. This forces the model to pack the most important information into the first dimensions.\n\n**Why it matters in production:**\n\n1. **Storage flexibility**: You can store 256-dim vectors instead of 1536-dim, reducing storage by 6× with only moderate quality loss.\n\n2. **Speed-accuracy tradeoff**: Use 256-dim for initial candidate retrieval (fast), re-score with full 1536-dim for top-K reranking (accurate). Two-stage retrieval without two separate models.\n\n3. **A/B testing dimensions**: Compare 512-dim vs 1536-dim retrieval quality on your specific dataset without retraining.\n\n**OpenAI's implementation**: text-embedding-3-small (1536-dim) and text-embedding-3-large (3072-dim) both use MRL. You can call `dimensions=512` in the API to get truncated vectors natively.\n\n**In a RAG system like SnugPrism**: Using 512-dim instead of 1536-dim for chunk storage reduces the pgvector index size by 3×, speeding up similarity search at minimal recall cost.",
+    "difficulty": "medium",
+    "tags": ["mrl", "matryoshka", "embeddings", "production"],
+    "code_snippet": "```python\nfrom openai import OpenAI\nclient = OpenAI()\n\n# Full 1536-dim (default)\nresp = client.embeddings.create(model='text-embedding-3-small', input='text')\n\n# Truncated to 512-dim via MRL (native API support)\nresp_small = client.embeddings.create(\n    model='text-embedding-3-small',\n    input='text',\n    dimensions=512  # MRL truncation\n)\nprint(len(resp_small.data[0].embedding))  # 512\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "embedding_models",
+    "question": "How does FAISS work and what index type should you use for different scale requirements?",
+    "answer": "**FAISS (Facebook AI Similarity Search)** is a library for efficient similarity search over dense vectors. It uses several approximate nearest neighbor (ANN) algorithms that trade recall for speed.\n\n**Index types:**\n\n**IndexFlatL2 / IndexFlatIP (exact search):**\nBrute-force L2 or inner product. 100% recall. No training required. Only feasible up to ~100K vectors (linear scan).\n\n**IVFFlat (Inverted File Index):**\nPartitions vectors into `nlist` Voronoi cells. At query time, only searches `nprobe` cells. ~10-100× faster than exact search with minor recall loss. Best for: 100K–10M vectors.\n\n**HNSW (Hierarchical Navigable Small World):**\nGraph-based ANN. High recall (~99%) at high speed. No training needed. Memory-heavy (stores graph). Best for: <10M vectors where memory is available. Used in pgvector.\n\n**IVF + PQ (Product Quantization):**\nQuantizes vectors into compact codes, reducing memory by 8-32×. Lower recall but enables billion-scale search. Best for: 100M+ vectors with memory constraints.\n\n**For SnugPrism (small scale, <50K chunks):**\nUse pgvector HNSW — high recall, no FAISS complexity, integrated with Supabase.\n\n**For production at Fidelity scale (millions of participants × embeddings):**\nIVFFlat on SageMaker, or managed OpenSearch with k-NN plugin.",
+    "difficulty": "medium",
+    "tags": ["faiss", "vector-search", "ann", "hnsw", "ivf"],
+    "code_snippet": "```python\nimport faiss\nimport numpy as np\n\nd = 1536  # embedding dimension\nn = 100_000\nvectors = np.random.random((n, d)).astype('float32')\nfaiss.normalize_L2(vectors)  # normalize for cosine similarity\n\n# IVFFlat for 100K-10M scale\nnlist = 100  # number of Voronoi cells\nquantizer = faiss.IndexFlatIP(d)\nindex = faiss.IndexIVFFlat(quantizer, d, nlist, faiss.METRIC_INNER_PRODUCT)\nindex.train(vectors)\nindex.add(vectors)\nindex.nprobe = 10  # search 10 cells at query time\n\nquery = np.random.random((1, d)).astype('float32')\nfaiss.normalize_L2(query)\nscores, indices = index.search(query, k=5)\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "llm_inferencing",
+    "question": "What is KV cache in transformer inference and why does it matter for production LLM serving?",
+    "answer": "**KV Cache (Key-Value Cache)** stores the computed Key and Value matrices from the attention mechanism for all previously processed tokens, so they don't need to be recomputed on each new token generation.\n\n**Why it matters:**\nTransformer attention computes `Q·K^T·V` for every token. During autoregressive generation, tokens 1..N are already processed — recomputing them for each new token N+1 would make generation O(N²). KV cache makes it O(N) by saving the K,V pairs.\n\n**Memory implications:**\nFor a 70B model with 80 attention layers, each with 8 KV heads of dimension 128, and 4096-token context: KV cache ≈ `2 × 4096 × 80 × 8 × 128 × 2 bytes (fp16) = 671MB per request`. At 100 concurrent users, that's 67GB just for KV cache — which is why GPU memory is the primary bottleneck in LLM serving.\n\n**Production optimizations:**\n- **PagedAttention (vLLM)**: Manages KV cache like OS virtual memory — pages shared across requests with same prefix. Reduces waste from fragmentation by ~55%.\n- **Prefix caching**: If multiple requests share a system prompt, cache that prefix's KV once.\n- **Sliding window attention**: Only cache the last W tokens (Mistral). Loses long-range context but reduces memory linearly.\n\n**Interview tip**: Mention vLLM as the standard for high-throughput LLM serving — it implements PagedAttention and continuous batching.",
+    "difficulty": "hard",
+    "tags": ["kv-cache", "inference", "vllm", "transformer", "memory"],
+    "code_snippet": null,
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "llm_inferencing",
+    "question": "Compare vLLM, TGI (Text Generation Inference), and Ollama for LLM serving. When would you use each?",
+    "answer": "All three serve open-source LLMs but target different scales and use cases.\n\n**vLLM:**\n- PagedAttention + continuous batching → highest throughput at scale\n- Supports tensor parallelism (multi-GPU)\n- OpenAI-compatible API\n- Best for: production, high-concurrency serving (>10 req/s)\n\n**TGI (Hugging Face Text Generation Inference):**\n- Flash Attention, tensor parallelism, quantization (GPTQ, AWQ)\n- Tight HuggingFace ecosystem integration\n- Streaming + SSE built-in\n- Best for: teams already on HF Hub, moderate scale\n\n**Ollama:**\n- Dead-simple local serving (one command)\n- GGUF quantization via llama.cpp\n- macOS/Linux desktop-first\n- Best for: local development, single-user, low-memory hardware\n\n**Production decision framework:**\n- Single developer / local: Ollama\n- Small team / moderate load (1-10 req/s): TGI\n- High-traffic production (10+ req/s, SLA requirements): vLLM\n- Managed / no ops overhead: OpenAI API or Bedrock",
+    "difficulty": "medium",
+    "tags": ["vllm", "tgi", "ollama", "serving", "inference"],
+    "code_snippet": null,
+    "comparison_table": {
+      "headers": ["Framework", "Throughput", "Memory Optimization", "Deployment", "Best Scale"],
+      "rows": [
+        ["vLLM", "Highest (PagedAttention)", "PagedAttention + prefix cache", "Docker/K8s", "Production (>10 req/s)"],
+        ["TGI", "High (Flash Attn)", "GPTQ/AWQ quantization", "Docker/K8s", "Medium scale"],
+        ["Ollama", "Low-Medium", "GGUF 4-bit quant", "Single binary", "Local/dev"],
+        ["llama.cpp", "Medium", "GGUF 2-8 bit quant", "Library/binary", "Local/edge"]
+      ]
+    }
+  },
+  {
+    "topic_slug": "evaluation",
+    "question": "What are the key metrics for evaluating a RAG pipeline? How do you measure faithfulness vs. relevance vs. context recall?",
+    "answer": "RAG evaluation has three primary dimensions, often evaluated using the **RAGAS framework**:\n\n**1. Faithfulness (Groundedness)**\nMeasures: Does the generated answer contain only facts from the retrieved context? (Hallucination detection)\nCompute: LLM-as-a-Judge scores each claim in the answer against the context. `Faithfulness = claims_supported / total_claims`\nTarget: >0.85 for production systems\n\n**2. Answer Relevance**\nMeasures: Is the answer actually addressing the user's question?\nCompute: Generate N question paraphrases from the answer, compute average cosine similarity between paraphrase embeddings and original question embedding.\nTarget: >0.80\n\n**3. Context Recall**\nMeasures: Did the retrieval step find all the information needed to answer?\nCompute: Compare retrieved chunks against ground-truth documents (requires annotated dataset). `Context Recall = relevant_retrieved / total_relevant`\nTarget: >0.75\n\n**4. Context Precision**\nMeasures: Are the retrieved chunks actually relevant? (Retrieval noise)\nCompute: Fraction of retrieved chunks that are relevant to the query.\n\n**5. End-to-End (Human eval)**\nFor AgentBot: attribute-level precision/recall against human-annotated transcripts was the gold standard — no automatic metric was trusted for production sign-off.\n\n**Practical advice**: Always build a **golden test set** of 100-200 question-answer pairs with ground truth. Automatic metrics catch regressions; human review catches subtle failures.",
+    "difficulty": "hard",
+    "tags": ["rag-evaluation", "ragas", "faithfulness", "context-recall"],
+    "code_snippet": "```python\nfrom ragas import evaluate\nfrom ragas.metrics import faithfulness, answer_relevancy, context_recall\nfrom datasets import Dataset\n\n# Build eval dataset\ndata = {\n    'question': ['How does LinGreedy work?'],\n    'answer': ['LinGreedy uses ridge regression per arm...'],  # model output\n    'contexts': [['LinGreedy is a contextual bandit...']], # retrieved chunks\n    'ground_truth': ['LinGreedy (epsilon-greedy) maintains...']  # gold answer\n}\ndataset = Dataset.from_dict(data)\n\nresults = evaluate(\n    dataset,\n    metrics=[faithfulness, answer_relevancy, context_recall]\n)\nprint(results)  # {'faithfulness': 0.92, 'answer_relevancy': 0.88, ...}\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "evaluation",
+    "question": "How do you evaluate propensity models? What metrics go beyond AUC-ROC and why?",
+    "answer": "**Propensity models** predict the probability of a behavior (e.g., attending a seminar, clicking a link). Evaluation needs to go beyond AUC-ROC because:\n\n**AUC-ROC limitations:**\n- Measures ranking quality but not calibration — a model with AUC=0.85 might assign probability 0.9 to events that happen only 60% of the time\n- Insensitive to class imbalance (rare positive events inflate AUC)\n\n**Better metrics for propensity:**\n\n**1. Calibration (Reliability Diagrams)**\nPlot predicted probability buckets vs actual event rate. A well-calibrated model's curve should follow y=x. Use **Expected Calibration Error (ECE)** as a scalar metric.\n\n**2. Brier Score**\nMean squared error between predicted probabilities and actual outcomes. Better than log-loss for interpretability. Lower = better.\n\n**3. Lift Curve / Gain Chart**\nAt score percentile P, how much more likely is a positive event vs. random? For WPS seminar model: top 10% by propensity score had 3.1× more attendees than average — this is the business case.\n\n**4. KS Statistic**\nMaximum separation between cumulative distribution of positives vs negatives at any threshold. High KS = good discrimination.\n\n**5. Fairness Metrics (Jurity)**\nIn financial services: ensure the model doesn't discriminate by age group or income bracket. Used Jurity library for disparate impact and equalized odds checks.",
+    "difficulty": "medium",
+    "tags": ["propensity-model", "calibration", "lift", "fairness", "jurity"],
+    "code_snippet": null,
+    "comparison_table": {
+      "headers": ["Metric", "What It Measures", "When to Use"],
+      "rows": [
+        ["AUC-ROC", "Ranking quality", "Balanced classes, ranking matters"],
+        ["Brier Score", "Probability accuracy", "When calibration matters"],
+        ["ECE", "Calibration quality", "When you use scores as probabilities"],
+        ["Lift@10%", "Business impact at top decile", "Marketing, targeting use cases"],
+        ["KS Statistic", "Score separation", "Credit scoring, risk"],
+        ["Disparate Impact", "Fairness across groups", "Regulated industries (finance)"]
+      ]
+    }
+  },
+  {
+    "topic_slug": "statistics",
+    "question": "Explain A/B testing. How do you determine sample size, and what are the common pitfalls that cause false positives?",
+    "answer": "**A/B testing** is a randomized controlled experiment comparing two variants (A=control, B=treatment) on a metric of interest.\n\n**Sample size calculation:**\nUse a power analysis: `n = 2 × (z_α/2 + z_β)² × σ² / Δ²`\n- `z_α/2`: z-score for significance level (e.g., 1.96 for α=0.05)\n- `z_β`: z-score for desired power (e.g., 0.84 for 80% power)\n- `σ²`: variance of the metric\n- `Δ`: minimum detectable effect (MDE)\n\nFor a click rate metric: if baseline=5%, MDE=0.5%, and σ²=p(1-p)=0.0475, you need ~7,500 per group.\n\n**Common pitfalls causing false positives:**\n\n1. **Peeking**: Checking significance repeatedly during the experiment and stopping when p<0.05. Use sequential testing (O'Brien-Fleming) if you need to peek.\n\n2. **Multiple testing**: Running 20 metrics in one experiment. At α=0.05, 1 will be significant by chance. Apply Bonferroni or FDR correction.\n\n3. **Simpson's Paradox**: Aggregate results hide segment-level effects. Always segment by user type, device, etc.\n\n4. **Novelty effect**: Users engage more with anything new. Run for at least 2-4 weeks.\n\n5. **SUTVA violation**: Spillover effects — one user's treatment affects another user's behavior (network effects in recommendation).\n\nFor the WPS recommender: held out a 10% control group with no recommendations for 8 weeks to measure true lift.",
+    "difficulty": "medium",
+    "tags": ["ab-testing", "statistics", "power-analysis", "p-value"],
+    "code_snippet": "```python\nfrom scipy import stats\nimport numpy as np\n\ndef sample_size_for_proportion(baseline: float, mde: float, \n                                alpha: float = 0.05, power: float = 0.80) -> int:\n    \"\"\"Calculate per-group sample size for a proportion test.\"\"\"\n    z_alpha = stats.norm.ppf(1 - alpha / 2)\n    z_beta = stats.norm.ppf(power)\n    p1, p2 = baseline, baseline + mde\n    p_bar = (p1 + p2) / 2\n    n = 2 * ((z_alpha + z_beta) ** 2) * p_bar * (1 - p_bar) / (mde ** 2)\n    return int(np.ceil(n))\n\nprint(sample_size_for_proportion(0.05, 0.005))  # ~7,500 per group\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "statistics",
+    "question": "What is the bias-variance tradeoff and how does it manifest in LightGBM vs. a deep neural network?",
+    "answer": "The **bias-variance tradeoff** describes the two sources of prediction error:\n- **Bias**: Error from wrong assumptions (underfitting — model too simple)\n- **Variance**: Error from sensitivity to training noise (overfitting — model too complex)\n- **Total error ≈ Bias² + Variance + Irreducible noise**\n\n**LightGBM (gradient boosted trees):**\n- Individually: single decision trees have high bias (simple decision rules)\n- Ensemble effect: boosting reduces bias rapidly; bagging reduces variance\n- Result: low bias, moderate variance\n- Regularization: L1/L2 on leaf weights, max_depth, min_data_in_leaf control variance\n- In WPS propensity model: LightGBM needed careful depth limiting to avoid overfitting on sparse features\n\n**Deep Neural Networks:**\n- Universal approximators → can achieve near-zero training bias\n- High variance — prone to memorizing training data\n- Variance reduction: dropout, batch normalization, data augmentation, early stopping\n- In WPS Stage 2 (multi-label): the neural network needed heavy dropout (0.4) to generalize on the multi-label theme prediction task\n\n**Key insight for interviews**: \n- Boosting primarily reduces **bias** (each tree corrects previous errors)\n- Bagging/ensemble primarily reduces **variance** (averaging reduces noise)\n- Neural networks with sufficient data approach low bias *and* low variance through implicit regularization during SGD",
+    "difficulty": "medium",
+    "tags": ["bias-variance", "lightgbm", "neural-networks", "overfitting"],
+    "code_snippet": null,
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "ml_models",
+    "question": "How does gradient boosting work? Why is LightGBM faster than XGBoost?",
+    "answer": "**Gradient boosting** builds an ensemble of weak learners (typically decision trees) sequentially. Each tree fits the **negative gradient** of the loss function — i.e., the 'residual errors' of the current ensemble.\n\n**Algorithm:**\n1. Initialize with a constant prediction (mean of target)\n2. Compute pseudo-residuals: `r_i = -∂L/∂F(x_i)` where F is current prediction\n3. Fit a new tree to the residuals\n4. Update: `F_new = F_old + η × tree_prediction` (η = learning rate)\n5. Repeat for N iterations\n\n**LightGBM vs XGBoost speed:**\n\n**Histogram-based splitting (LightGBM):**\nLightGBM bins continuous features into ~256 buckets before training. Finding the best split in a bin of 256 values is O(256) vs O(n) for XGBoost's exact algorithm.\n\n**Leaf-wise vs. Level-wise growth:**\n- XGBoost: grows all leaves at the same depth (level-wise) — balanced trees\n- LightGBM: grows the leaf with maximum delta loss (leaf-wise) — asymmetric but faster convergence\n\n**GOSS (Gradient-based One-Side Sampling):**\nKeeps data points with large gradients (informative) and samples a fraction of small-gradient points. Reduces dataset size by 50-80% with minimal accuracy loss.\n\n**Result**: LightGBM is typically 5-10× faster than XGBoost on large datasets. For the 15M-participant propensity model at Fidelity, training time dropped from hours to minutes.",
+    "difficulty": "medium",
+    "tags": ["lightgbm", "xgboost", "gradient-boosting", "trees"],
+    "code_snippet": null,
+    "comparison_table": {
+      "headers": ["Feature", "XGBoost", "LightGBM"],
+      "rows": [
+        ["Tree growth", "Level-wise (depth-first)", "Leaf-wise (best-first)"],
+        ["Split finding", "Exact or histogram", "Histogram (default)"],
+        ["Memory", "Higher", "Lower (GOSS+histogram)"],
+        ["Speed", "Baseline", "5-10× faster"],
+        ["Overfitting risk", "Lower", "Higher (leaf-wise) — tune min_data_in_leaf"]
+      ]
+    }
+  },
+  {
+    "topic_slug": "ml_models",
+    "question": "What is SHAP and how did you use it to explain recommender model predictions at Fidelity?",
+    "answer": "**SHAP (SHapley Additive exPlanations)** is a game-theoretic approach to model explainability. It assigns each feature a contribution value (SHAP value) representing how much that feature moved the prediction away from the base rate.\n\n**Mathematical foundation:**\nSHAP values are based on Shapley values from cooperative game theory: the average marginal contribution of a feature across all possible feature orderings. For tree models, TreeSHAP computes exact SHAP values in O(TLD²) — polynomial time.\n\n**Key SHAP plots:**\n- **Summary plot (bee swarm)**: Shows global feature importance + direction of effect\n- **Waterfall plot**: Decomposes a single prediction into feature contributions\n- **Dependence plot**: Shows how SHAP value of feature X varies with X's value\n\n**Application in Fidelity recommenders:**\n1. **Model validation**: Used SHAP summary plots to verify that WPS propensity model was using legitimate business signals (tenure, plan type, engagement history) rather than spurious correlations\n2. **Bias detection**: Combined with Jurity to check if protected attributes (age bucket) had disproportionate SHAP values — any high SHAP on a protected feature triggered a fairness review\n3. **Business explanation**: For ARB (Architecture Review Board) approval, SHAP waterfall charts for sample predictions provided the required model transparency for a financial services deployment\n\n**Interview tip**: Distinguish SHAP from LIME (LIME is model-agnostic, locally linear; SHAP has stronger consistency properties and exact values for trees).",
+    "difficulty": "medium",
+    "tags": ["shap", "explainability", "fairness", "lightgbm"],
+    "code_snippet": "```python\nimport shap\nimport lightgbm as lgb\n\nmodel = lgb.LGBMClassifier().fit(X_train, y_train)\nexplainer = shap.TreeExplainer(model)\nshap_values = explainer.shap_values(X_test)  # shape: (n_samples, n_features)\n\n# Global feature importance\nshap.summary_plot(shap_values[1], X_test, plot_type='bar')\n\n# Single prediction explanation\nshap.waterfall_plot(shap.Explanation(\n    values=shap_values[1][0],\n    base_values=explainer.expected_value[1],\n    data=X_test.iloc[0],\n    feature_names=X_test.columns.tolist()\n))\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "sql",
+    "question": "Write a SQL query to find the top 3 seminars by attendance rate per plan type, using window functions.",
+    "answer": "This problem requires calculating attendance rate per seminar per plan type, then ranking within each plan type.\n\n**Approach:**\n1. Aggregate registrations and attendances per seminar + plan_type\n2. Compute attendance_rate = attended / registered\n3. Use `RANK()` window function partitioned by plan_type, ordered by rate descending\n4. Filter to rank <= 3\n\n**Key SQL concepts used:**\n- `GROUP BY` for aggregation\n- Window function `RANK() OVER (PARTITION BY ... ORDER BY ...)` for within-group ranking\n- CTE for readability\n\n**Interview tip**: Always clarify requirements — should ties both get rank 3 (RANK) or should only 3 rows be returned (ROW_NUMBER with deduplication)? RANK() includes ties; DENSE_RANK() avoids gaps; ROW_NUMBER() breaks ties arbitrarily.",
+    "difficulty": "medium",
+    "tags": ["sql", "window-functions", "cte", "ranking"],
+    "code_snippet": "```sql\nWITH seminar_stats AS (\n    SELECT \n        s.seminar_id,\n        s.seminar_name,\n        p.plan_type,\n        COUNT(*) AS total_registered,\n        SUM(CASE WHEN r.attended = TRUE THEN 1 ELSE 0 END) AS total_attended,\n        ROUND(\n            100.0 * SUM(CASE WHEN r.attended = TRUE THEN 1 ELSE 0 END) / COUNT(*), 2\n        ) AS attendance_rate\n    FROM registrations r\n    JOIN seminars s ON r.seminar_id = s.seminar_id\n    JOIN participants p ON r.participant_id = p.participant_id\n    GROUP BY s.seminar_id, s.seminar_name, p.plan_type\n),\nranked AS (\n    SELECT \n        *,\n        RANK() OVER (PARTITION BY plan_type ORDER BY attendance_rate DESC) AS rank\n    FROM seminar_stats\n    WHERE total_registered >= 10  -- min sample threshold\n)\nSELECT seminar_name, plan_type, attendance_rate, rank\nFROM ranked\nWHERE rank <= 3\nORDER BY plan_type, rank;\n```",
+    "comparison_table": null
+  },
+  {
+    "topic_slug": "sql",
+    "question": "What is a CTE (Common Table Expression) and when should you use one vs. a subquery or a temp table?",
+    "answer": "A **CTE** (WITH clause) defines a named, reusable query block within a single SQL statement. Syntactically, it's an expression; it doesn't persist to disk.\n\n**CTE vs Subquery:**\n- CTEs are named and can be referenced multiple times in the main query; subqueries inline directly (can't be reused)\n- CTEs improve readability for multi-step transformations\n- Performance is usually identical — modern query planners (Snowflake, Postgres) inline CTEs\n- **Recursive CTEs** are the main functional advantage: can traverse hierarchical data (org charts, graph traversal) — subqueries can't do this\n\n**CTE vs Temp Table:**\n- Temp tables persist for the session and can have indexes — better for large intermediate results reused many times\n- CTEs are session-scoped, not disk-persisted — better for single-use transformations\n- In Snowflake (used at Fidelity), temp tables support clustering keys which can dramatically improve large join performance\n\n**When to use each:**\n- Use **CTE** for: multi-step logic, readability, recursive queries, one-time intermediate result\n- Use **temp table** for: intermediate result used 3+ times, large dataset with index benefit, cross-query reuse within a session\n- Use **subquery** for: simple one-off filter/lookup, when you want to keep the query compact\n\n**Interview tip**: If asked about CTE performance, mention that in Snowflake CTEs are *always* materialized (computed once), unlike Postgres where they may be inlined.",
+    "difficulty": "easy",
+    "tags": ["sql", "cte", "subquery", "snowflake"],
+    "code_snippet": null,
+    "comparison_table": {
+      "headers": ["Feature", "CTE", "Subquery", "Temp Table"],
+      "rows": [
+        ["Reusability", "Within query", "No", "Within session"],
+        ["Persistence", "Query scope", "Query scope", "Session scope"],
+        ["Readability", "High", "Medium", "High"],
+        ["Indexes", "No", "No", "Yes"],
+        ["Recursive queries", "Yes", "No", "No"],
+        ["Best for", "Multi-step, recursive", "Simple inline filter", "Large reused results"]
+      ]
+    }
+  }
+]

@@ -1,0 +1,23 @@
+[project]
+name = "snugprism-backend"
+version = "0.1.0"
+description = "SnugPrism DS Interview Prep — FastAPI backend"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "fastapi>=0.136.1",
+    "httpx>=0.28.1",
+    "loguru>=0.7.3",
+    "motor>=3.7.0",
+    "openai>=2.36.0",
+    "pdfplumber>=0.11.9",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.1",
+    "python-multipart>=0.0.27",
+    "pyyaml>=6.0.2",
+    "qdrant-client>=1.12.0",
+    "sentence-transformers>=3.0.0",
+    "tavily-python>=0.7.24",
+    "uvicorn[standard]>=0.46.0",
+]
