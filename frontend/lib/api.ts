@@ -37,6 +37,7 @@ export function useQuestions(params: {
   topic_slug?: string
   difficulty?: string
   q?: string
+  tag?: string
   limit?: number
   offset?: number
 }) {
@@ -44,6 +45,7 @@ export function useQuestions(params: {
   if (params.topic_slug) search.set('topic_slug', params.topic_slug)
   if (params.difficulty) search.set('difficulty', params.difficulty)
   if (params.q) search.set('q', params.q)
+  if (params.tag) search.set('tag', params.tag)
   if (params.limit) search.set('limit', String(params.limit))
   if (params.offset) search.set('offset', String(params.offset))
   const qs = search.toString()

@@ -34,10 +34,11 @@ async def list_questions(
     topic_slug: str | None = Query(None),
     difficulty: str | None = Query(None),
     q: str | None = Query(None),
+    tag: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    items, total = await fetch_questions(topic_slug, difficulty, q, limit, offset)
+    items, total = await fetch_questions(topic_slug, difficulty, q, limit, offset, tag)
     return QuestionsPage(items=[_to_out(r) for r in items], total=total)
 
 

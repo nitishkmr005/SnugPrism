@@ -12,6 +12,7 @@ const PAGE_SIZE = 10
 export default function PrepPage() {
   const [topic, setTopic] = useState('')
   const [difficulty, setDifficulty] = useState('')
+  const [sourceTag, setSourceTag] = useState('')
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(0)
 
@@ -19,6 +20,7 @@ export default function PrepPage() {
   const { data, isLoading, error } = useQuestions({
     topic_slug: topic || undefined,
     difficulty: difficulty || undefined,
+    tag: sourceTag || undefined,
     q: search || undefined,
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
@@ -36,8 +38,10 @@ export default function PrepPage() {
         topics={topics}
         activeTopic={topic}
         difficulty={difficulty}
+        sourceTag={sourceTag}
         onTopic={handleFilterChange(setTopic)}
         onDifficulty={handleFilterChange(setDifficulty)}
+        onSourceTag={handleFilterChange(setSourceTag)}
       />
 
       <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
