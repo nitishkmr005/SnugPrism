@@ -1,9 +1,9 @@
 """
-Seed script: loads embedding models Q&As and Learning Hub sections from static JSON files.
+Seed script: loads SQL Q&As and Learning Hub sections from static JSON files.
 Idempotent — skips questions that already exist (duplicate check on question text + topic).
 
 Usage (from backend/):
-    uv run python scripts/seed_embedding_content.py
+    uv run python scripts/seed_sql_content.py
 """
 import asyncio
 import json
@@ -14,26 +14,22 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
 from config.logging import setup_logging
-from app.services.document_db import (
-    fetch_topics,
-    insert_question,
-    get_db,
-)
+from app.services.document_db import fetch_topics, insert_question, get_db
 
 setup_logging()
 
 DATA_DIR = Path(__file__).parent.parent / "data" / "seed"
 QA_FILE = DATA_DIR / "questions.json"
-HUB_FILE = DATA_DIR / "embedding_hub_sections.json"
+HUB_FILE = DATA_DIR / "sql_hub_sections.json"
 
-EMBEDDING_TOPIC_SLUGS = {"embedding_models", "evaluation"}
+SQL_TOPIC_SLUGS = {"sql"}
 
 
-async def seed_embedding_questions(topics_by_slug: dict) -> int:
+async def seed_sql_questions(topics_by_slug: dict) -> int:
     questions = json.loads(QA_FILE.read_text())
-    embedding_qs = [q for q in questions if q.get("topic_slug") in EMBEDDING_TOPIC_SLUGS]
+    sql_qs = [q for q in questions if q.get("topic_slug") in SQL_TOPIC_SLUGS]
     inserted = 0
-    for q in embedding_qs:
+    for q in sql_qs:
         slug = q.pop("topic_slug")
         topic = topics_by_slug.get(slug)
         if not topic:
@@ -58,19 +54,20 @@ async def seed_embedding_questions(topics_by_slug: dict) -> int:
     return inserted
 
 
-async def seed_embedding_hub_sections(topics_by_slug: dict) -> int:
+async def seed_sql_hub_sections(topics_by_slug: dict) -> int:
     sections = json.loads(HUB_FILE.read_text())
-    topic = topics_by_slug.get("embedding_models")
+    topic = topics_by_slug.get("sql")
     if not topic:
-        logger.error("Topic 'embedding_models' not found — run the main seed script first")
+        logger.error("Topic 'sql' not found — run the main seed script first")
         return 0
 
     from bson import ObjectId
     db = get_db()
     existing_count = await db.hub_sections.count_documents({"topic_id": ObjectId(topic["id"])})
     if existing_count > 0:
-        logger.info(f"Hub sections for embedding_models already exist ({existing_count}), skipping")
+        logger.info(f"Hub sections for sql already exist ({existing_count}), skipping")
         return 0
+
     rows = [
         {
             "topic_id": ObjectId(topic["id"]),
@@ -82,12 +79,12 @@ async def seed_embedding_hub_sections(topics_by_slug: dict) -> int:
         for s in sections
     ]
     await db.hub_sections.insert_many(rows)
-    logger.success(f"Inserted {len(rows)} hub sections for embedding_models")
+    logger.success(f"Inserted {len(rows)} hub sections for sql")
     return len(rows)
 
 
 async def main():
-    logger.info("=== Seeding embedding models content ===")
+    logger.info("=== Seeding SQL content ===")
     topics = await fetch_topics()
     topics_by_slug = {t["slug"]: t for t in topics}
 
@@ -95,10 +92,10 @@ async def main():
         logger.error("No topics found — run 'make seed' first to seed topics")
         return
 
-    qa_count = await seed_embedding_questions(topics_by_slug)
-    logger.success(f"Q&As: inserted {qa_count} embedding/evaluation questions")
+    qa_count = await seed_sql_questions(topics_by_slug)
+    logger.success(f"Q&As: inserted {qa_count} SQL questions")
 
-    hub_count = await seed_embedding_hub_sections(topics_by_slug)
+    hub_count = await seed_sql_hub_sections(topics_by_slug)
     logger.success(f"Hub sections: inserted {hub_count} sections")
 
     logger.info("=== Done ===")

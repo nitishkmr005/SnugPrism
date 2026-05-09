@@ -1,4 +1,4 @@
-.PHONY: setup start stop dev-backend dev-frontend seed seed-full reindex regenerate-qas check build-backend test-pdf
+.PHONY: setup start stop dev-backend dev-frontend seed seed-full reindex regenerate-qas check build-backend test-pdf seed-embeddings seed-sql seed-remaining
 
 setup:  ## Install backend/frontend dependencies needed to run locally
 	@command -v docker >/dev/null 2>&1 || (echo "Docker is required. Install Docker Desktop first." && exit 1)
@@ -67,6 +67,12 @@ seed-full:  ## Full seed: topics + resume Q&As + hub content (requires OPENAI_AP
 
 seed-embeddings:  ## Seed embedding models Q&As + Learning Hub sections (no LLM calls, fast)
 	cd backend && PYTHONPATH=. uv run python scripts/seed_embedding_content.py
+
+seed-sql:  ## Seed SQL Q&As + Learning Hub sections (no LLM calls, fast)
+	cd backend && PYTHONPATH=. uv run python scripts/seed_sql_content.py
+
+seed-remaining:  ## Seed Q&As for statistics, ml_models, llms, ai_agents, llm_inferencing, recommender_systems
+	cd backend && PYTHONPATH=. uv run python scripts/seed_remaining_topics_content.py
 
 reindex:  ## Rebuild Qdrant vectors from documents already stored in MongoDB
 	cd backend && PYTHONPATH=. uv run python scripts/reindex_documents.py

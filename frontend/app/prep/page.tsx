@@ -48,11 +48,20 @@ export default function PrepPage() {
         {/* Header */}
         <div className="mb-4 shrink-0">
           <div className="flex items-center justify-between mb-3">
-            <h1 className="text-xl font-bold">
-              {topic ? topics.find((t) => t.slug === topic)?.label : 'All Topics'}
-            </h1>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight">
+                {topic ? topics.find((t) => t.slug === topic)?.label : 'All Topics'}
+              </h1>
+              {sourceTag && (
+                <p className="text-xs text-primary font-medium mt-0.5">
+                  Filtered by: {sourceTag.replace('source:', '')}
+                </p>
+              )}
+            </div>
             {data && (
-              <span className="text-sm text-muted-foreground">{data.total} questions</span>
+              <span className="inline-flex items-center rounded-full bg-primary/8 px-2.5 py-1 text-xs font-semibold text-primary">
+                {data.total} questions
+              </span>
             )}
           </div>
           <SearchBar value={search} onChange={(v) => { setSearch(v); setPage(0) }} />

@@ -28,6 +28,11 @@ def _doc(d: dict | None) -> dict | None:
     return d
 
 
+def _question_key(question: str) -> str:
+    """Normalize question text so near-identical duplicates collapse to one row."""
+    return " ".join(question.strip().lower().split())
+
+
 async def init_indexes() -> None:
     """Ensure required indexes exist (idempotent)."""
     db = get_db()
@@ -40,10 +45,9 @@ async def init_indexes() -> None:
         background=True,
     )
     await db.questions.create_index(
-        [("topic_id", 1), ("question", 1), ("source", 1)],
+        [("topic_id", 1), ("question_key", 1)],
         unique=True,
-        name="generated_question_unique",
-        partialFilterExpression={"source": "generated"},
+        name="question_unique_per_topic",
         background=True,
     )
     await db.hub_sections.create_index([("topic_id", 1), ("sort_order", 1)], background=True)
@@ -102,9 +106,45 @@ async def fetch_questions(
     if tag:
         match["tags"] = tag
 
-    total = await db.questions.count_documents(match)
-    pipeline = [
+    dedupe_pipeline = [
         {"$match": match},
+        {"$sort": {"created_at": 1}},
+        {
+            "$addFields": {
+                "_normalized_question": {
+                    "$ifNull": [
+                        "$question_key",
+                        {
+                            "$trim": {"input": {"$toLower": "$question"}}
+                        },
+                    ]
+                }
+            }
+        },
+        {
+            "$group": {
+                "_id": {
+                    "topic_id": "$topic_id",
+                    "question": "$_normalized_question",
+                },
+                "doc": {"$first": "$$ROOT"},
+            }
+        },
+        {"$replaceRoot": {"newRoot": "$doc"}},
+        {"$project": {"_normalized_question": 0}},
+    ]
+
+    total_cursor = db.questions.aggregate([
+        *dedupe_pipeline,
+        {"$count": "total"},
+    ])
+    total = 0
+    async for row in total_cursor:
+        total = row["total"]
+        break
+
+    pipeline = [
+        *dedupe_pipeline,
         {"$sort": {"created_at": 1}},
         {"$skip": offset},
         {"$limit": limit},
@@ -161,6 +201,7 @@ async def insert_question(payload: dict) -> dict:
     p = dict(payload)
     if "topic_id" in p and isinstance(p["topic_id"], str):
         p["topic_id"] = ObjectId(p["topic_id"])
+    p["question_key"] = _question_key(p["question"])
     p.setdefault("created_at", datetime.now(UTC))
     result = await get_db().questions.insert_one(p)
     return await fetch_question_by_id(str(result.inserted_id))
@@ -170,6 +211,8 @@ async def update_question(qid: str, payload: dict) -> dict:
     p = dict(payload)
     if "topic_id" in p and isinstance(p["topic_id"], str):
         p["topic_id"] = ObjectId(p["topic_id"])
+    if "question" in p:
+        p["question_key"] = _question_key(p["question"])
     await get_db().questions.update_one({"_id": ObjectId(qid)}, {"$set": p})
     return await fetch_question_by_id(qid)
 
@@ -193,14 +236,26 @@ async def delete_generated_questions_for_document(title: str, source_ref: str | 
     return result.deleted_count
 
 
-async def cleanup_duplicate_generated_questions() -> int:
-    """Keep the oldest generated Q&A for each topic/question pair."""
+async def cleanup_duplicate_questions() -> int:
+    """Keep the oldest Q&A for each topic/question pair across all sources."""
     db = get_db()
     pipeline = [
-        {"$match": {"source": "generated"}},
+        {
+            "$addFields": {
+                "_normalized_question": {
+                    "$ifNull": [
+                        "$question_key",
+                        {
+                            "$trim": {"input": {"$toLower": "$question"}}
+                        },
+                    ]
+                }
+            }
+        },
+        {"$sort": {"created_at": 1, "_id": 1}},
         {
             "$group": {
-                "_id": {"topic_id": "$topic_id", "question": "$question"},
+                "_id": {"topic_id": "$topic_id", "question": "$_normalized_question"},
                 "ids": {"$push": "$_id"},
                 "count": {"$sum": 1},
             }
@@ -212,6 +267,10 @@ async def cleanup_duplicate_generated_questions() -> int:
         stale_ids.extend(group["ids"][1:])
     if stale_ids:
         await db.questions.delete_many({"_id": {"$in": stale_ids}})
+    await db.questions.update_many(
+        {"$or": [{"question_key": {"$exists": False}}, {"question_key": ""}]},
+        [{"$set": {"question_key": {"$trim": {"input": {"$toLower": "$question"}}}}}],
+    )
     return len(stale_ids)
 
 
@@ -339,7 +398,7 @@ async def insert_chat_message(
 # ── Hub ───────────────────────────────────────────────────────────────────────
 
 async def fetch_hub_sections(topic_id: str) -> list[dict]:
-    cursor = get_db().hub_sections.find({"topic_id": topic_id}).sort("sort_order", 1)
+    cursor = get_db().hub_sections.find({"topic_id": ObjectId(topic_id)}).sort("sort_order", 1)
     return [_doc(s) async for s in cursor]
 
 

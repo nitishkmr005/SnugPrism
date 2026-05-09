@@ -127,8 +127,8 @@ function HubTopicContent({ slug, onPreviewPdf }: { slug: string; onPreviewPdf: (
         <p className="text-muted-foreground py-8 text-center">No content yet. Run the seed script or ingest a document.</p>
       )}
 
-      {sections.map((section) => (
-        <SubSection key={section.id} section={section} />
+      {sections.map((section, idx) => (
+        <SubSection key={section.id} section={section} defaultOpen={idx === 0} />
       ))}
 
       {documents.length > 0 && (
@@ -173,21 +173,34 @@ export default function HubPage() {
   const [activeTab, setActiveTab] = useState<string>('')
   const [previewDoc, setPreviewDoc] = useState<Document | null>(null)
 
-  if (isLoading) return <div className="flex justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
+  if (isLoading) return (
+    <div className="flex justify-center py-20">
+      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+    </div>
+  )
   if (!topics.length) return null
 
   const active = activeTab || topics[0]?.slug || ''
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold">Learning Hub</h1>
-        <p className="text-muted-foreground text-sm mt-1">Structured deep dives · ingested documents · RAG-powered chat</p>
+    <div className="max-w-5xl mx-auto px-4 py-8">
+      {/* Page header */}
+      <div className="mb-8">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="inline-flex items-center rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary">
+            Learning Hub
+          </span>
+        </div>
+        <h1 className="text-2xl font-bold tracking-tight">Deep Dive Reference</h1>
+        <p className="text-muted-foreground text-sm mt-1.5">
+          Click any section to expand · Ingest documents to add sources · Ask the chat widget to search
+        </p>
       </div>
+
       <Tabs value={active} onValueChange={setActiveTab}>
-        <TabsList className="flex flex-wrap h-auto gap-1 mb-6">
+        <TabsList className="flex flex-wrap h-auto gap-1 mb-7 p-1">
           {topics.map((t) => (
-            <TabsTrigger key={t.slug} value={t.slug} className="text-xs sm:text-sm">
+            <TabsTrigger key={t.slug} value={t.slug} className="text-xs sm:text-sm px-3 py-1.5">
               {t.label}
             </TabsTrigger>
           ))}

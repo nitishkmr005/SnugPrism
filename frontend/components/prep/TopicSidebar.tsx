@@ -1,4 +1,5 @@
 'use client'
+import type { ReactNode } from 'react'
 import type { Topic } from '@/lib/types'
 
 const DIFFICULTY_OPTS = ['easy', 'medium', 'hard'] as const
@@ -24,88 +25,86 @@ interface Props {
   onSourceTag: (s: string) => void
 }
 
+function SidebarSection({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70 mb-1.5 px-1">
+        {label}
+      </p>
+      {children}
+    </div>
+  )
+}
+
+function SidebarBtn({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full text-left px-3 py-1.5 rounded-lg text-sm transition-all ${
+        active
+          ? 'bg-primary text-primary-foreground font-semibold shadow-sm'
+          : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
 export default function TopicSidebar({ topics, activeTopic, difficulty, sourceTag, onTopic, onDifficulty, onSourceTag }: Props) {
   return (
-    <aside className="w-52 shrink-0 space-y-6 overflow-y-auto">
-      <div>
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Topics</p>
+    <aside className="w-52 shrink-0 space-y-5 overflow-y-auto pb-4">
+      <SidebarSection label="Topics">
         <ul className="space-y-0.5">
           <li>
-            <button
-              onClick={() => onTopic('')}
-              className={`w-full text-left px-3 py-1.5 rounded-md text-sm transition-colors ${
-                !activeTopic ? 'bg-primary text-primary-foreground font-medium' : 'hover:bg-muted text-muted-foreground'
-              }`}
-            >
+            <SidebarBtn active={!activeTopic} onClick={() => onTopic('')}>
               All Topics
-            </button>
+            </SidebarBtn>
           </li>
           {topics.map((t) => (
             <li key={t.slug}>
-              <button
-                onClick={() => onTopic(t.slug)}
-                className={`w-full text-left px-3 py-1.5 rounded-md text-sm transition-colors ${
-                  activeTopic === t.slug
-                    ? 'bg-primary text-primary-foreground font-medium'
-                    : 'hover:bg-muted text-muted-foreground'
-                }`}
-              >
+              <SidebarBtn active={activeTopic === t.slug} onClick={() => onTopic(t.slug)}>
                 {t.label}
-              </button>
+              </SidebarBtn>
             </li>
           ))}
         </ul>
-      </div>
+      </SidebarSection>
 
-      <div>
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Difficulty</p>
-        <div className="flex flex-col gap-1">
-          <button
-            onClick={() => onDifficulty('')}
-            className={`px-3 py-1.5 rounded-md text-sm text-left transition-colors ${
-              !difficulty ? 'bg-primary text-primary-foreground font-medium' : 'hover:bg-muted text-muted-foreground'
-            }`}
-          >
-            All
-          </button>
+      <div className="border-t border-border/50" />
+
+      <SidebarSection label="Difficulty">
+        <div className="space-y-0.5">
+          <SidebarBtn active={!difficulty} onClick={() => onDifficulty('')}>All</SidebarBtn>
           {DIFFICULTY_OPTS.map((d) => (
-            <button
-              key={d}
-              onClick={() => onDifficulty(d)}
-              className={`px-3 py-1.5 rounded-md text-sm text-left capitalize transition-colors ${
-                difficulty === d ? 'bg-primary text-primary-foreground font-medium' : 'hover:bg-muted text-muted-foreground'
-              }`}
-            >
-              {d}
-            </button>
+            <SidebarBtn key={d} active={difficulty === d} onClick={() => onDifficulty(d)}>
+              <span className="capitalize">{d}</span>
+            </SidebarBtn>
           ))}
         </div>
-      </div>
+      </SidebarSection>
 
-      <div>
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Citation Source</p>
-        <div className="flex flex-col gap-1">
-          <button
-            onClick={() => onSourceTag('')}
-            className={`px-3 py-1.5 rounded-md text-sm text-left transition-colors ${
-              !sourceTag ? 'bg-primary text-primary-foreground font-medium' : 'hover:bg-muted text-muted-foreground'
-            }`}
-          >
-            All Sources
-          </button>
+      <div className="border-t border-border/50" />
+
+      <SidebarSection label="Citation Source">
+        <div className="space-y-0.5">
+          <SidebarBtn active={!sourceTag} onClick={() => onSourceTag('')}>All Sources</SidebarBtn>
           {CITATION_SOURCES.map((s) => (
-            <button
-              key={s.tag}
-              onClick={() => onSourceTag(s.tag)}
-              className={`px-3 py-1.5 rounded-md text-sm text-left transition-colors ${
-                sourceTag === s.tag ? 'bg-primary text-primary-foreground font-medium' : 'hover:bg-muted text-muted-foreground'
-              }`}
-            >
+            <SidebarBtn key={s.tag} active={sourceTag === s.tag} onClick={() => onSourceTag(s.tag)}>
               {s.label}
-            </button>
+            </SidebarBtn>
           ))}
         </div>
-      </div>
+      </SidebarSection>
     </aside>
   )
 }
