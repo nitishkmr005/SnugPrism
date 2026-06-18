@@ -14,9 +14,21 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from app.services.vector_db import ensure_collection
-    from app.services.document_db import init_indexes
+    from app.services.vector_db import delete_by_doc_id, ensure_collection
+    from app.services.document_db import (
+        cleanup_duplicate_documents,
+        cleanup_duplicate_questions,
+        init_indexes,
+    )
     await ensure_collection()
+    stale_doc_ids = await cleanup_duplicate_documents()
+    for doc_id in stale_doc_ids:
+        await delete_by_doc_id(doc_id)
+    if stale_doc_ids:
+        logger.info(f"Removed {len(stale_doc_ids)} duplicate document row(s)")
+    stale_qa_count = await cleanup_duplicate_questions()
+    if stale_qa_count:
+        logger.info(f"Removed {stale_qa_count} duplicate Q&A row(s)")
     await init_indexes()
     yield
 

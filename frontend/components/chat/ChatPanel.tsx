@@ -14,6 +14,7 @@ export default function ChatPanel() {
   const [loading, setLoading] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [streamingText, setStreamingText] = useState('')
+  const streamingTextRef = useRef('')
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -26,28 +27,34 @@ export default function ChatPanel() {
     setInput('')
     setLoading(true)
     setMessages((prev) => [...prev, { role: 'user', content: msg }])
+    streamingTextRef.current = ''
     setStreamingText('')
 
     streamChat(
       msg,
       sessionId,
-      (token) => setStreamingText((prev) => prev + token),
+      (token) => {
+        streamingTextRef.current += token
+        setStreamingText(streamingTextRef.current)
+      },
       ({ sources, articles, session_id }) => {
         setSessionId(session_id)
         setMessages((prev) => [
           ...prev,
           {
             role: 'assistant',
-            content: streamingText + '',
+            content: streamingTextRef.current,
             sources: sources as SourceChunk[],
             articles: articles as ArticleResult[],
           },
         ])
+        streamingTextRef.current = ''
         setStreamingText('')
         setLoading(false)
       },
       () => {
         setLoading(false)
+        streamingTextRef.current = ''
         setStreamingText('')
       }
     )

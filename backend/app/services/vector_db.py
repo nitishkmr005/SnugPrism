@@ -73,6 +73,8 @@ async def upsert_chunks(doc_id: str, chunks: list[dict]) -> list[str]:
                 },
             )
         )
+    if not points:
+        return []
     await get_client().upsert(collection_name=s.qdrant_collection, points=points)
     logger.debug(f"Upserted {len(points)} chunks for doc {doc_id}")
     return point_ids
@@ -81,9 +83,9 @@ async def upsert_chunks(doc_id: str, chunks: list[dict]) -> list[str]:
 async def search_chunks(query_embedding: list[float], top_k: int = 5) -> list[dict]:
     """Cosine similarity search. Returns list of chunk dicts with score."""
     s = get_settings()
-    results = await get_client().search(
+    response = await get_client().query_points(
         collection_name=s.qdrant_collection,
-        query_vector=query_embedding,
+        query=query_embedding,
         limit=top_k,
         with_payload=True,
     )
@@ -96,7 +98,7 @@ async def search_chunks(query_embedding: list[float], top_k: int = 5) -> list[di
             "doc_id": r.payload.get("doc_id") if r.payload else None,
             "page_number": r.payload.get("page_number") if r.payload else None,
         }
-        for r in results
+        for r in response.points
     ]
 
 

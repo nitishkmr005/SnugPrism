@@ -41,11 +41,13 @@ Rules:
 3. Each answer MUST end with this exact citation block (fill in placeholders):
    ---
    **📚 Citation:** *{document_title}* — excerpted for the **{topic_label}** topic.
-4. Assign difficulty: easy / medium / hard. Target mix: ~20% easy, ~50% medium, ~30% hard.
-5. Include `code_snippet` (```python ... ```) when a concrete implementation aids understanding.
-6. Include `comparison_table` JSON when comparing 2+ approaches, metrics, or architectures.
-7. Tag with 2–4 lowercase keyword tags relevant to the question concept.
-8. Return ONLY a valid JSON array — no prose, no markdown wrapper outside the JSON.
+4. Do NOT invent numeric metrics, benchmark results, latency, scale, page numbers, or production values.
+   Use numbers only when they are explicitly present in the source context; otherwise describe tradeoffs qualitatively.
+5. Assign difficulty: easy / medium / hard. Target mix: ~20% easy, ~50% medium, ~30% hard.
+6. Include `code_snippet` (```python ... ```) when a concrete implementation aids understanding.
+7. Include `comparison_table` JSON when comparing 2+ approaches, metrics, or architectures.
+8. Tag with 2–4 lowercase keyword tags relevant to the question concept.
+9. Return ONLY a valid JSON array — no prose, no markdown wrapper outside the JSON.
 
 JSON schema for each item:
 {{
@@ -96,7 +98,7 @@ def build_qa_prompt(document_text: str, topic_label: str, n: int = 15, document_
                 n=n,
                 topic_label=topic_label,
                 document_title=document_title,
-                document_text=document_text[:8000],
+                document_text=document_text,
             ),
         },
     ]

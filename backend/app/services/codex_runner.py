@@ -10,9 +10,6 @@ import os
 from loguru import logger
 from config.settings import get_settings
 
-_MODEL = "codex-cli"
-
-
 async def run(prompt: str, purpose: str = "qa_generation") -> str:
     """Execute prompt via `codex exec --json` non-interactively.
 
@@ -20,13 +17,12 @@ async def run(prompt: str, purpose: str = "qa_generation") -> str:
     Falls back gracefully — callers should catch RuntimeError and use llm.complete().
     """
     s = get_settings()
-    env = {
-        **os.environ,
-        "CODEX_API_KEY": s.openai_api_key,
-        "OPENAI_API_KEY": s.openai_api_key,
-    }
+    env = dict(os.environ)
+    env.pop("CODEX_API_KEY", None)
+    env.pop("OPENAI_API_KEY", None)
     proc = await asyncio.create_subprocess_exec(
         "codex", "exec",
+        "--model", s.codex_qa_model,
         "--ephemeral",
         "--sandbox", "workspace-write",
         "--skip-git-repo-check",
@@ -69,7 +65,7 @@ async def run(prompt: str, purpose: str = "qa_generation") -> str:
 
     if input_tokens or output_tokens:
         from app.services.run_logger import log_run
-        await log_run("llm", _MODEL, purpose, input_tokens, output_tokens)
+        await log_run("llm", s.codex_qa_model, purpose, input_tokens, output_tokens)
         logger.info(f"Codex [{purpose}]: in={input_tokens} out={output_tokens} tokens")
 
     logger.info(f"Codex exec completed ({len(response_text)} chars)")

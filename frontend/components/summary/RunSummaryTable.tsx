@@ -17,6 +17,17 @@ function num(n: number) {
   return n.toLocaleString()
 }
 
+function dateTime(value: string) {
+  return new Date(value).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
 interface Props {
   data: RunSummary
 }
@@ -111,7 +122,7 @@ export default function RunSummaryTable({ data }: Props) {
               {data.entries.map((e) => (
                 <tr key={e.id} className="hover:bg-muted/20">
                   <td className="px-3 py-1.5 text-muted-foreground whitespace-nowrap">
-                    {new Date(e.timestamp).toLocaleTimeString()}
+                    {dateTime(e.timestamp)}
                   </td>
                   <td className="px-3 py-1.5 capitalize">{e.call_type}</td>
                   <td className="px-3 py-1.5 font-mono">{e.model}</td>

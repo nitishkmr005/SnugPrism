@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     llm_provider: str = _cfg["llm"]["provider"]
     openai_model: str = _cfg["llm"]["model"]
     qa_model: str = _cfg["llm"]["qa_model"]
+    codex_qa_model: str = "gpt-5.3-codex"
     llm_max_tokens: int = _cfg["llm"]["max_tokens"]
 
     # Embeddings
@@ -45,6 +46,9 @@ class Settings(BaseSettings):
     rag_chunk_size: int = _cfg["rag"]["chunk_size"]
     rag_chunk_overlap: int = _cfg["rag"]["chunk_overlap"]
     web_search_max_results: int = _cfg["rag"]["web_search_max_results"]
+    qa_context_chars: int = 8000
+    qa_questions_per_window: int = 3
+    qa_max_windows: int = 0  # 0 means use every context window
 
     # Logging
     log_level: str = _cfg["logging"]["level"]

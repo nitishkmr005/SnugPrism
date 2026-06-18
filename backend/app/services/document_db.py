@@ -1,6 +1,7 @@
 """MongoDB async client (Motor). All structured data access goes through here."""
 from __future__ import annotations
 from datetime import datetime, UTC
+import re
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from config.settings import get_settings
@@ -27,11 +28,28 @@ def _doc(d: dict | None) -> dict | None:
     return d
 
 
+def _question_key(question: str) -> str:
+    """Normalize question text so near-identical duplicates collapse to one row."""
+    return " ".join(question.strip().lower().split())
+
+
 async def init_indexes() -> None:
     """Ensure required indexes exist (idempotent)."""
     db = get_db()
     await db.questions.create_index([("question", "text")], name="question_text", background=True)
     await db.topics.create_index("slug", unique=True, background=True)
+    await db.documents.create_index(
+        [("source_type", 1), ("source_ref", 1)],
+        unique=True,
+        name="document_source_unique",
+        background=True,
+    )
+    await db.questions.create_index(
+        [("topic_id", 1), ("question_key", 1)],
+        unique=True,
+        name="question_unique_per_topic",
+        background=True,
+    )
     await db.hub_sections.create_index([("topic_id", 1), ("sort_order", 1)], background=True)
     await db.chat_messages.create_index([("session_id", 1), ("created_at", 1)], background=True)
 
@@ -67,6 +85,7 @@ async def fetch_questions(
     q: str | None,
     limit: int,
     offset: int,
+    tag: str | None = None,
 ) -> tuple[list[dict], int]:
     """Return (items, total_count) with topic embedded."""
     db = get_db()
@@ -84,9 +103,48 @@ async def fetch_questions(
     if q:
         match["$text"] = {"$search": q}
 
-    total = await db.questions.count_documents(match)
-    pipeline = [
+    if tag:
+        match["tags"] = tag
+
+    dedupe_pipeline = [
         {"$match": match},
+        {"$sort": {"created_at": 1}},
+        {
+            "$addFields": {
+                "_normalized_question": {
+                    "$ifNull": [
+                        "$question_key",
+                        {
+                            "$trim": {"input": {"$toLower": "$question"}}
+                        },
+                    ]
+                }
+            }
+        },
+        {
+            "$group": {
+                "_id": {
+                    "topic_id": "$topic_id",
+                    "question": "$_normalized_question",
+                },
+                "doc": {"$first": "$$ROOT"},
+            }
+        },
+        {"$replaceRoot": {"newRoot": "$doc"}},
+        {"$project": {"_normalized_question": 0}},
+    ]
+
+    total_cursor = db.questions.aggregate([
+        *dedupe_pipeline,
+        {"$count": "total"},
+    ])
+    total = 0
+    async for row in total_cursor:
+        total = row["total"]
+        break
+
+    pipeline = [
+        *dedupe_pipeline,
         {"$sort": {"created_at": 1}},
         {"$skip": offset},
         {"$limit": limit},
@@ -143,6 +201,7 @@ async def insert_question(payload: dict) -> dict:
     p = dict(payload)
     if "topic_id" in p and isinstance(p["topic_id"], str):
         p["topic_id"] = ObjectId(p["topic_id"])
+    p["question_key"] = _question_key(p["question"])
     p.setdefault("created_at", datetime.now(UTC))
     result = await get_db().questions.insert_one(p)
     return await fetch_question_by_id(str(result.inserted_id))
@@ -152,12 +211,67 @@ async def update_question(qid: str, payload: dict) -> dict:
     p = dict(payload)
     if "topic_id" in p and isinstance(p["topic_id"], str):
         p["topic_id"] = ObjectId(p["topic_id"])
+    if "question" in p:
+        p["question_key"] = _question_key(p["question"])
     await get_db().questions.update_one({"_id": ObjectId(qid)}, {"$set": p})
     return await fetch_question_by_id(qid)
 
 
 async def delete_question(qid: str) -> None:
     await get_db().questions.delete_one({"_id": ObjectId(qid)})
+
+
+async def delete_generated_questions_for_document(title: str, source_ref: str | None = None) -> int:
+    """Delete generated Q&A rows previously cited to the same document/source."""
+    answer_matches = [{"answer": {"$regex": re.escape(title)}}]
+    if source_ref and source_ref != title:
+        answer_matches.append({"answer": {"$regex": re.escape(source_ref)}})
+    matches = answer_matches + ([{"reference_urls": source_ref}] if source_ref else [])
+    result = await get_db().questions.delete_many(
+        {
+            "source": "generated",
+            "$or": matches,
+        }
+    )
+    return result.deleted_count
+
+
+async def cleanup_duplicate_questions() -> int:
+    """Keep the oldest Q&A for each topic/question pair across all sources."""
+    db = get_db()
+    pipeline = [
+        {
+            "$addFields": {
+                "_normalized_question": {
+                    "$ifNull": [
+                        "$question_key",
+                        {
+                            "$trim": {"input": {"$toLower": "$question"}}
+                        },
+                    ]
+                }
+            }
+        },
+        {"$sort": {"created_at": 1, "_id": 1}},
+        {
+            "$group": {
+                "_id": {"topic_id": "$topic_id", "question": "$_normalized_question"},
+                "ids": {"$push": "$_id"},
+                "count": {"$sum": 1},
+            }
+        },
+        {"$match": {"count": {"$gt": 1}}},
+    ]
+    stale_ids = []
+    async for group in db.questions.aggregate(pipeline):
+        stale_ids.extend(group["ids"][1:])
+    if stale_ids:
+        await db.questions.delete_many({"_id": {"$in": stale_ids}})
+    await db.questions.update_many(
+        {"$or": [{"question_key": {"$exists": False}}, {"question_key": ""}]},
+        [{"$set": {"question_key": {"$trim": {"input": {"$toLower": "$question"}}}}}],
+    )
+    return len(stale_ids)
 
 
 # ── Documents ─────────────────────────────────────────────────────────────────
@@ -174,6 +288,45 @@ async def insert_document(title: str, source_type: str, source_ref: str, topic_i
     result = await get_db().documents.insert_one(doc)
     inserted = await get_db().documents.find_one({"_id": result.inserted_id})
     return _doc(inserted)
+
+
+async def cleanup_duplicate_documents() -> list[str]:
+    """
+    Remove duplicate document rows before creating the unique source index.
+
+    Keeps the row with the most indexed chunks, then the newest ingest time.
+    Returns deleted document ids so callers can remove orphaned vector points.
+    """
+    db = get_db()
+    pipeline = [
+        {
+            "$group": {
+                "_id": {"source_type": "$source_type", "source_ref": "$source_ref"},
+                "count": {"$sum": 1},
+                "docs": {
+                    "$push": {
+                        "_id": "$_id",
+                        "chunk_count": "$chunk_count",
+                        "ingested_at": "$ingested_at",
+                    }
+                },
+            }
+        },
+        {"$match": {"count": {"$gt": 1}}},
+    ]
+
+    deleted_ids: list[str] = []
+    async for group in db.documents.aggregate(pipeline):
+        docs = sorted(
+            group["docs"],
+            key=lambda d: (d.get("chunk_count") or 0, d.get("ingested_at") or datetime.min.replace(tzinfo=UTC)),
+            reverse=True,
+        )
+        stale_ids = [d["_id"] for d in docs[1:]]
+        if stale_ids:
+            await db.documents.delete_many({"_id": {"$in": stale_ids}})
+            deleted_ids.extend(str(oid) for oid in stale_ids)
+    return deleted_ids
 
 
 async def update_document_chunk_count(doc_id: str, chunk_count: int) -> None:
@@ -193,6 +346,19 @@ async def update_document_topic_ids(doc_id: str, topic_ids: list[str]) -> None:
 async def fetch_documents() -> list[dict]:
     cursor = get_db().documents.find().sort("ingested_at", -1)
     return [_doc(d) async for d in cursor]
+
+
+async def fetch_document_by_id(doc_id: str) -> dict | None:
+    try:
+        doc = await get_db().documents.find_one({"_id": ObjectId(doc_id)})
+    except Exception:
+        return None
+    return _doc(doc)
+
+
+async def fetch_document_by_source_ref(source_ref: str) -> dict | None:
+    doc = await get_db().documents.find_one({"source_ref": source_ref})
+    return _doc(doc)
 
 
 async def fetch_documents_by_topic_id(topic_id: str) -> list[dict]:
@@ -232,7 +398,7 @@ async def insert_chat_message(
 # ── Hub ───────────────────────────────────────────────────────────────────────
 
 async def fetch_hub_sections(topic_id: str) -> list[dict]:
-    cursor = get_db().hub_sections.find({"topic_id": topic_id}).sort("sort_order", 1)
+    cursor = get_db().hub_sections.find({"topic_id": ObjectId(topic_id)}).sort("sort_order", 1)
     return [_doc(s) async for s in cursor]
 
 

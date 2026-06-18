@@ -11,6 +11,8 @@ import CodeBlock from './CodeBlock'
 import ComparisonTable from './ComparisonTable'
 import type { Question } from '@/lib/types'
 
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
 export default function QuestionCard({ q, defaultOpen = false }: { q: Question; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen)
 
@@ -87,7 +89,7 @@ export default function QuestionCard({ q, defaultOpen = false }: { q: Question; 
               {q.pdf_links.map((link) => (
                 <a
                   key={`${link.doc_id}-${link.page}`}
-                  href={`${process.env.NEXT_PUBLIC_API_URL}/api/documents/${link.doc_id}/page/${link.page}`}
+                  href={`${API}/api/documents/${link.doc_id}/pdf#page=${link.page}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-1.5 text-xs text-primary hover:underline"
